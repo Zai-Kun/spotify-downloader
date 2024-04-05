@@ -19,7 +19,7 @@ HEADERS = {
     "Origin": "https://spotifydown.com",
 }
 
-logger = get_logger()
+logger = get_logger(name="spotify")
 
 
 class Utils:

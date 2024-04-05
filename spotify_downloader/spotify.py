@@ -87,6 +87,7 @@ class Track:
             return
 
         async def _save_to_file():
+            logger.info(f"Downloading: {self.title}")
             image_task = asyncio.create_task(self.fetch_covor_image())
 
             with open(file_path, "wb") as f:

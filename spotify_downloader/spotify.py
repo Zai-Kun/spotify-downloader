@@ -48,7 +48,11 @@ class Track:
         self.title = track["title"]
         self.cover = track["cover"]
         self.album = track["album"]
-        self.artists = track["artists"]
+        self.artists = (
+            ", ".join(track["artists"])
+            if isinstance(track["artists"], list)
+            else track["artists"]
+        )
         self.release_date = track["releaseDate"]
         self.download_url = f"{SPOTIFY_API}/download/{self.id}"
 
@@ -118,12 +122,47 @@ class Track:
             raise RuntimeError("tag is None somehow")
 
         audiofile.tag.images.set(ImageFrame.FRONT_COVER, image, "image/jpeg")
-        audiofile.tag.artist = (
-            ", ".join(self.artists) if isinstance(self.artists, list) else self.artists
-        )
+        audiofile.tag.artist = self.artists
         audiofile.tag.album = self.album
         audiofile.tag.title = self.title
         audiofile.tag.save()
+
+
+class Playlist:
+    def __init__(
+        self, playlist_metadata: dict[str, Any], session: aiohttp.ClientSession
+    ) -> None:
+        self.id = playlist_metadata["id"]
+        self.title = playlist_metadata["title"]
+        self.artists = (
+            ", ".join(playlist_metadata["artists"])
+            if isinstance(playlist_metadata["artists"], list)
+            else playlist_metadata["artists"]
+        )
+        self.cover = playlist_metadata["cover"]
+
+        self._session = session
+
+    async def fetch_all_tracks(self) -> AsyncGenerator[Track, None]:
+        offset = 0
+
+        while True:
+            async with self._session.get(
+                f"{SPOTIFY_API}/trackList/playlist/{self.id}?offset={offset}",
+                headers=HEADERS,
+            ) as resp:
+                decoded_json = json.loads(await resp.text())
+                if not decoded_json["success"]:
+                    raise RuntimeError(
+                        f"An unexpected error occured. Server response:\n{decoded_json}"
+                    )
+                for track in decoded_json["trackList"]:
+                    yield Track(track, self._session)
+
+                if decoded_json["nextOffset"] is None:
+                    break
+
+                offset = decoded_json["nextOffset"]
 
 
 class SpotifyDownloader:
@@ -144,29 +183,19 @@ class SpotifyDownloader:
                 )
             return Track(decoded_json, self._session)
 
-    async def fetch_all_playlist_tracks(
-        self, playlist_url: str
-    ) -> AsyncGenerator[Track, None]:
+    async def fetch_playlist(self, playlist_url: str) -> Playlist:
         playlist_id = Utils.extract_id_from_url(playlist_url)
-        offset = 0
-
-        while True:
-            async with self._session.get(
-                f"{SPOTIFY_API}/trackList/playlist/{playlist_id}?offset={offset}",
-                headers=HEADERS,
-            ) as resp:
-                decoded_json = json.loads(await resp.text())
-                if not decoded_json["success"]:
-                    raise RuntimeError(
-                        f"An unexpected error occured. Server response:\n{decoded_json}"
-                    )
-                for track in decoded_json["trackList"]:
-                    yield Track(track, self._session)
-
-                if decoded_json["nextOffset"] is None:
-                    break
-
-                offset = decoded_json["nextOffset"]
+        async with self._session.get(
+            f"{SPOTIFY_API}/metadata/playlist/{playlist_id}",
+            headers=HEADERS,
+        ) as resp:
+            decoded_json = json.loads(await resp.text())
+            if not decoded_json["success"]:
+                raise RuntimeError(
+                    f"An unexpected error occured. Server response:\n{decoded_json}"
+                )
+            decoded_json["id"] = playlist_id
+            return Playlist(decoded_json, self._session)
 
     def close_session(self):
         if self._session is not None:

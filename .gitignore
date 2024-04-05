@@ -1,2 +1,5 @@
 .venv
 .tmp
+*.log
+*.sublime-workspace
+*.sublime-project

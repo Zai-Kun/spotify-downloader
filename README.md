@@ -1,1 +1,6 @@
-# just another spotify downloader tool
+# Just another Spotify Downloader
+
+Usage:
+```sh
+pip install -r requirements.txt && python main.py
+```

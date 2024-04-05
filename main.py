@@ -34,9 +34,7 @@ async def main():
     if is_playlist:
         sema = asyncio.BoundedSemaphore(2)
         tasks = []
-        async for track in spotify_downloader.fetch_all_playlist_tracks(
-            "https://open.spotify.com/playlist/2vCcNrn3cc0v99W0HngUZf?si=e55e481f98534a3c"
-        ):
+        async for track in spotify_downloader.fetch_all_playlist_tracks(link):
             tasks.append(track.save_to(DOWNLOAD_PATH, sema))
         await asyncio.gather(*tasks)
         return

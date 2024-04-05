@@ -31,7 +31,7 @@ async def main():
     spotify_downloader = SpotifyDownloader()
     link = take_user_input()
 
-    if is_playlist:
+    if is_playlist(link):
         sema = asyncio.BoundedSemaphore(2)
         tasks = []
         async for track in spotify_downloader.fetch_all_playlist_tracks(link):

@@ -2,13 +2,12 @@ import asyncio
 import atexit
 import json
 import os
-import re
-import unicodedata
 from typing import Any, AsyncGenerator
 
 import aiohttp
 import eyed3
 from eyed3.id3.frames import ImageFrame
+from pathvalidate import sanitize_filename
 
 from .utils.logger import get_logger
 
@@ -26,20 +25,6 @@ class Utils:
     @staticmethod
     def extract_id_from_url(url: str) -> str:
         return url.split("/")[-1].split("?")[0]
-
-    @staticmethod
-    def slugify(value, allow_unicode=False):
-        value = str(value)
-        if allow_unicode:
-            value = unicodedata.normalize("NFKC", value)
-        else:
-            value = (
-                unicodedata.normalize("NFKD", value)
-                .encode("ascii", "ignore")
-                .decode("ascii")
-            )
-        value = re.sub(r"[^\w\s-]", "", value.lower())
-        return re.sub(r"[-\s]+", "-", value).strip("-_")
 
 
 class Track:
@@ -84,7 +69,7 @@ class Track:
     ):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-        file_path = os.path.join(folder_path, Utils.slugify(self.title) + ".mp3")
+        file_path = os.path.join(folder_path, sanitize_filename(self.title + ".mp3"))
 
         if os.path.exists(file_path):
             logger.warning(f"{self.title} already exists, skipping")

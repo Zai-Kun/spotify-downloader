@@ -3,8 +3,9 @@ import json
 import os
 import sys
 
+from pathvalidate import sanitize_filename
+
 from spotify_downloader import SpotifyDownloader
-from spotify_downloader.spotify import Utils
 
 if not os.path.isfile(f"{os.path.realpath(os.path.dirname(__file__))}/config.json"):
     sys.exit("'config.json' not found! Please add it and try again.")
@@ -36,7 +37,7 @@ async def main():
         tasks = []
         sema = asyncio.BoundedSemaphore(2)
         playlist = await spotify_downloader.fetch_playlist(link)
-        playlist_path = os.path.join(DOWNLOAD_PATH, Utils.slugify(playlist.title))
+        playlist_path = os.path.join(DOWNLOAD_PATH, sanitize_filename(playlist.title))
         async for track in playlist.fetch_all_tracks():
             tasks.append(track.save_to(playlist_path, sema))
         await asyncio.gather(*tasks)

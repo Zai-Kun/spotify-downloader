@@ -3,8 +3,6 @@ import json
 import os
 import sys
 
-from pathvalidate import sanitize_filename
-
 from spotify_downloader import SpotifyDownloader
 
 if not os.path.isfile(f"{os.path.realpath(os.path.dirname(__file__))}/config.json"):
@@ -30,22 +28,8 @@ def is_playlist(link: str) -> bool:
 
 
 async def main():
-    spotify_downloader = SpotifyDownloader()
-    link = take_user_input()
-
-    if "playlist" in link:
-        tasks = []
-        sema = asyncio.BoundedSemaphore(2)
-        playlist = await spotify_downloader.fetch_playlist(link)
-        playlist_path = os.path.join(DOWNLOAD_PATH, sanitize_filename(playlist.title))
-        async for track in playlist.fetch_all_tracks():
-            tasks.append(track.save_to(playlist_path, sema))
-        await asyncio.gather(*tasks)
-        return
-
-    track = await spotify_downloader.fetch_track(link)
-    await track.save_to(DOWNLOAD_PATH)
-
+    while True:
+        await SpotifyDownloader()  # Awaiting initialization if it's an async function
 
 if __name__ == "__main__":
     asyncio.run(main())

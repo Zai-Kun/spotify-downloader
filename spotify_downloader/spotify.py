@@ -1,24 +1,18 @@
 import asyncio
-import atexit
 import json
 import os
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import aiohttp
 import eyed3
 from eyed3.id3.frames import ImageFrame
 from pathvalidate import sanitize_filename
 
-from .utils.logger import get_logger
+SPOTIFY_API = "https://api.fabdl.com"
 
-SPOTIFY_API = "https://api.spotifydown.com"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Referer": "https://spotifydown.com/",
-    "Origin": "https://spotifydown.com",
-}
-
-logger = get_logger(name="spotify")
+with open("config.json") as config_file:
+    config = json.load(config_file)
+DOWNLOAD_DIR = config.get("download_path", "./downloads")
 
 
 class Utils:
@@ -27,161 +21,152 @@ class Utils:
         return url.split("/")[-1].split("?")[0]
 
 
-class Track:
-    def __init__(self, track: dict[str, Any], session: aiohttp.ClientSession) -> None:
-        self.id = track["id"]
-        self.title = track["title"]
-        self.cover = track["cover"]
-        self.album = track["album"]
-        self.artists = (
-            ", ".join(track["artists"])
-            if isinstance(track["artists"], list)
-            else track["artists"]
-        )
-        self.release_date = track["releaseDate"]
-        self.download_url = f"{SPOTIFY_API}/download/{self.id}"
+async def fetch_playlist_data():
+    user_input = input("Enter your Spotify playlist or track link: ")
+    
+    if "/track/" in user_input:
+        # Handle single track
+        song_id = Utils.extract_id_from_url(user_input)
+        await download_single_track(song_id)
+    elif "/playlist/" in user_input:
+        # Handle playlist
+        playlist_url = f"{SPOTIFY_API}/spotify/get?url={user_input}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(playlist_url) as response:
+                data = await response.json()
 
-        self._session = session
+                for track in data["result"]["tracks"]:
+                    song_id = track['id']
+                    song_name = track['name']
+                    artist_name = track['artists']
+                    await get_gid(session, song_id, song_name, artist_name)
+    else:
+        print("Invalid Spotify link. Please provide a valid track or playlist URL.")
 
-    async def fetch_stream_url(self) -> str:
-        async with self._session.get(self.download_url, headers=HEADERS) as resp:
-            decoded_json = json.loads(await resp.text())
-            if not decoded_json["success"]:
-                raise RuntimeError(
-                    f"An unexpected error occured. Server response:\n{decoded_json}"
-                )
 
-            return decoded_json["link"]
+async def download_single_track(song_id: str):
+    async with aiohttp.ClientSession() as session:
+        track_url = f"{SPOTIFY_API}/spotify/get?url=https://open.spotify.com/track/{song_id}"
+        async with session.get(track_url) as response:
+            data = await response.json()
+            if 'result' not in data:
+                print("Error: Could not retrieve track information.")
+                return
 
-    async def download(self) -> AsyncGenerator[bytes, None]:
-        download_link = await self.fetch_stream_url()
-        async with self._session.get(download_link, headers=HEADERS) as resp:
-            if resp.status == 200:
-                async for chunk in resp.content.iter_any():
-                    yield chunk
+            song_name = data['result'].get('name', 'Unknown Song')
+            artist_name = data['result'].get('artists', 'Unknown Artist')
+            gid = data['result'].get('gid')
+            cover_url = data['result'].get('cover_url')
+
+            if gid:
+                await get_download_link(session, gid, song_id, song_name, artist_name, cover_url)
+
+
+async def get_gid(session: aiohttp.ClientSession, song_id: str, song_name: str, artist_name: str) -> None:
+    url = f"{SPOTIFY_API}/spotify/get?url=https://open.spotify.com/track/{song_id}"
+
+    try:
+        async with session.get(url) as response:
+            data = await response.json()
+
+            if 'result' not in data or 'gid' not in data['result']:
+                print(f"Missing necessary data for {song_name} by {artist_name}, skipping.")
+                return
+
+            gid = data['result']['gid']
+            cover_url = data['result'].get('cover_url')
+            await get_download_link(session, gid, song_id, song_name, artist_name, cover_url)
+
+    except aiohttp.ClientError as e:
+        print(f"Error retrieving data for {song_name} by {artist_name}: {e}")
+
+    except Exception as e:
+        print(f"Unexpected error for {song_name} by {artist_name}: {e}")
+
+
+async def get_download_link(session: aiohttp.ClientSession, gid: str, track_id: str, song_name: str, artist_name: str, cover_url: str) -> None:
+    url = f"{SPOTIFY_API}/spotify/mp3-convert-task/{gid}/{track_id}"
+
+    try:
+        async with session.get(url) as response:
+            data: dict[str, Any] = await response.json()
+
+            if 'result' not in data or 'download_url' not in data['result']:
+                print(f"Missing 'download_url' for {song_name} by {artist_name}, skipping.")
+                return
+
+            download_url = f"{SPOTIFY_API}{data['result']['download_url']}/"
+            await download_song(session, download_url, song_name, artist_name, cover_url)
+
+    except aiohttp.ClientError as e:
+        print(f"Error retrieving download link for {song_name} by {artist_name}: {e}")
+
+    except Exception as e:
+        print(f"Unexpected error for {song_name} by {artist_name}: {e}")
+
+
+async def download_song(session: aiohttp.ClientSession, url: str, song_name: str, artist_name: str, cover_url: str) -> None:
+    try:
+        async with session.get(url) as response:
+            if response.status == 200:
+                filename = f"{song_name} - {artist_name}.mp3"
+                
+                if not os.path.exists(DOWNLOAD_DIR):
+                    os.makedirs(DOWNLOAD_DIR)
+
+                file_path = os.path.join(DOWNLOAD_DIR, sanitize_filename(filename))
+
+                if os.path.exists(file_path):
+                    print(f"{filename} already exists, skipping.")
+                    return
+
+                with open(file_path, 'wb') as f:
+                    async for chunk in response.content.iter_any():
+                        f.write(chunk)
+
+                await embed_metadata(file_path, song_name, artist_name, cover_url, session)
+
             else:
-                RuntimeError(
-                    f"An unexpected error occured. Server response:\n{await resp.text()}"
-                )
+                print(f"Failed to download {song_name} by {artist_name}: Status {response.status}")
 
-    async def save_to(
-        self, folder_path: str, sema: asyncio.BoundedSemaphore | None = None
-    ):
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-        file_path = os.path.join(folder_path, sanitize_filename(self.title + ".mp3"))
+    except aiohttp.ClientError as e:
+        print(f"Failed to download {song_name} by {artist_name}: {e}")
 
-        if os.path.exists(file_path):
-            logger.warning(f"{self.title} already exists, skipping")
-            return
+    except Exception as e:
+        print(f"Unexpected error downloading {song_name} by {artist_name}: {e}")
 
-        async def _save_to_file():
-            logger.info(f"Downloading: {self.title}")
-            image_task = asyncio.create_task(self.fetch_covor_image())
 
-            with open(file_path, "wb") as f:
-                async for chunk in self.download():
-                    f.write(chunk)
-                image = await image_task
-                self.embed_track_info_to_mp3(file_path, image)
-
-        if sema is None:
-            await _save_to_file()
-        else:
-            async with sema:
-                await _save_to_file()
-        logger.info(f"Done downloading: {self.title}")
-
-    async def fetch_covor_image(self) -> bytes:
-        async with self._session.get(self.cover, headers=HEADERS) as resp:
-            return await resp.read()
-
-    def embed_track_info_to_mp3(self, mp3_path: str, image: bytes):
+async def embed_metadata(mp3_path: str, song_name: str, artist_name: str, cover_url: str, session: aiohttp.ClientSession) -> None:
+    try:
         audiofile = eyed3.load(mp3_path)
         if audiofile is None:
             raise RuntimeError("Failed to load mp3 file.")
 
         if audiofile.tag is None:
             audiofile.initTag()
-        if audiofile.tag is None:
-            raise RuntimeError("tag is None somehow")
 
-        audiofile.tag.images.set(ImageFrame.FRONT_COVER, image, "image/jpeg")
-        audiofile.tag.artist = self.artists
-        audiofile.tag.album = self.album
-        audiofile.tag.title = self.title
+        audiofile.tag.artist = artist_name
+        audiofile.tag.title = song_name
+
+        if cover_url:
+            async with session.get(cover_url) as response:
+                if response.status == 200:
+                    image_data = await response.read()
+                    audiofile.tag.images.set(
+                        ImageFrame.FRONT_COVER, image_data, "image/jpeg"
+                    )
+
         audiofile.tag.save()
 
+        print(f"Metadata saved for {song_name} by {artist_name}")
 
-class Playlist:
-    def __init__(
-        self, playlist_metadata: dict[str, Any], session: aiohttp.ClientSession
-    ) -> None:
-        self.id = playlist_metadata["id"]
-        self.title = playlist_metadata["title"]
-        self.artists = (
-            ", ".join(playlist_metadata["artists"])
-            if isinstance(playlist_metadata["artists"], list)
-            else playlist_metadata["artists"]
-        )
-        self.cover = playlist_metadata["cover"]
-
-        self._session = session
-
-    async def fetch_all_tracks(self) -> AsyncGenerator[Track, None]:
-        offset = 0
-
-        while True:
-            async with self._session.get(
-                f"{SPOTIFY_API}/trackList/playlist/{self.id}?offset={offset}",
-                headers=HEADERS,
-            ) as resp:
-                decoded_json = json.loads(await resp.text())
-                if not decoded_json["success"]:
-                    raise RuntimeError(
-                        f"An unexpected error occured. Server response:\n{decoded_json}"
-                    )
-                for track in decoded_json["trackList"]:
-                    yield Track(track, self._session)
-
-                if decoded_json["nextOffset"] is None:
-                    break
-
-                offset = decoded_json["nextOffset"]
+    except Exception as e:
+        print(f"Error embedding metadata for {song_name} by {artist_name}: {e}")
 
 
-class SpotifyDownloader:
-    def __init__(self) -> None:
-        self._session = aiohttp.ClientSession()
-        atexit.register(self.close_session)
+async def SpotifyDownloader():
+    await fetch_playlist_data()
 
-    async def fetch_track(self, track_url: str) -> Track:
-        track_id = Utils.extract_id_from_url(track_url)
-        async with self._session.get(
-            f"{SPOTIFY_API}/metadata/track/{track_id}",
-            headers=HEADERS,
-        ) as resp:
-            decoded_json = json.loads(await resp.text())
-            if not decoded_json["success"]:
-                raise RuntimeError(
-                    f"An unexpected error occured. Server response:\n{decoded_json}"
-                )
-            return Track(decoded_json, self._session)
 
-    async def fetch_playlist(self, playlist_url: str) -> Playlist:
-        playlist_id = Utils.extract_id_from_url(playlist_url)
-        async with self._session.get(
-            f"{SPOTIFY_API}/metadata/playlist/{playlist_id}",
-            headers=HEADERS,
-        ) as resp:
-            decoded_json = json.loads(await resp.text())
-            if not decoded_json["success"]:
-                raise RuntimeError(
-                    f"An unexpected error occured. Server response:\n{decoded_json}"
-                )
-            decoded_json["id"] = playlist_id
-            return Playlist(decoded_json, self._session)
-
-    def close_session(self):
-        if self._session is not None:
-            asyncio.run(self._session.close())
+if __name__ == "__main__":
+    asyncio.run(SpotifyDownloader())
